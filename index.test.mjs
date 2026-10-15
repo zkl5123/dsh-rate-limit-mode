@@ -166,10 +166,60 @@ test('ordinary progress events leave the banner untouched', () => {
   assert.equal(state.lastDailyLimit, null);
 });
 
-test('the banner persists indefinitely until the user acts', () => {
+test('the banner stays until the failure is resolved', () => {
   // The client used to hide the notice after 60s, so a user returning to the
   // tab later saw nothing while the quota was still spent.
   const state = foldRateLimit(rateLimitInit(), retryEvent(AGNES_RATE_LIMIT, 'agnes', 1000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, true);
+});
+
+/** A `turn/end` carrying an arbitrary reason kind. */
+const turnEndKind = (kind, time) => ({
+  type: 'turn/end',
+  seq: 9,
+  time,
+  data: { turn: 1, reason: { kind } }
+});
+
+test('a later completed turn clears the banner', () => {
+  // The reported bug: after a 429 the session carried on chatting normally, yet
+  // the banner stayed, because only a model switch was treated as resolution.
+  let state = rateLimitInit();
+  state = foldRateLimit(state, retryEvent(AGNES_RATE_LIMIT, 'agnes', 1000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, true);
+
+  state = foldRateLimit(state, completedTurnEnd(2000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, false, 'a normal turn resolves the notice');
+  assert.equal(rateLimitView(state).frozenUntil, null);
+});
+
+test('a completed turn also clears a notice recorded without a provider', () => {
+  let state = rateLimitInit();
+  state = foldRateLimit(state, turnEndEvent(AGNES_DAILY_QUOTA, 1000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, true);
+  state = foldRateLimit(state, completedTurnEnd(5000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, false);
+});
+
+test('a turn that did not complete leaves the banner up', () => {
+  for (const kind of ['aborted', 'blocked', 'interrupted', 'max-tokens', 'forked', 'error']) {
+    let state = rateLimitInit();
+    state = foldRateLimit(state, retryEvent(AGNES_RATE_LIMIT, 'agnes', 1000));
+    state = foldRateLimit(state, turnEndKind(kind, 2000));
+    assert.equal(
+      rateLimitView(state).pendingModelSwitch,
+      true,
+      `a "${kind}" turn says nothing about recovery`
+    );
+  }
+});
+
+test('a quota failure after a completed turn opens the banner again', () => {
+  let state = rateLimitInit();
+  state = foldRateLimit(state, retryEvent(AGNES_RATE_LIMIT, 'agnes', 1000));
+  state = foldRateLimit(state, completedTurnEnd(2000));
+  assert.equal(rateLimitView(state).pendingModelSwitch, false);
+  state = foldRateLimit(state, retryEvent(AGNES_RATE_LIMIT, 'agnes', 3000));
   assert.equal(rateLimitView(state).pendingModelSwitch, true);
 });
 

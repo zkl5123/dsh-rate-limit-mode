@@ -47,6 +47,10 @@ export const rateLimitStateSchema = projectionSchema.object({
     projectionSchema.any()
   ]),
   lastModelSelectionAt: projectionSchema.union([projectionSchema.number(), projectionSchema.any()]),
+  // A turn that completed normally proves the failure was recovered from. The
+  // notice describes an UNRESOLVED quota failure, so a later completed turn
+  // clears it just like a model switch does.
+  lastCompletedTurnAt: projectionSchema.union([projectionSchema.number(), projectionSchema.any()]),
   // Remembered so a failure reported without a provider (the finish chunk of
   // `assistant/attempt`, and `turn/end`) still names the provider out of quota.
   lastProvider: projectionSchema.union([projectionSchema.string(), projectionSchema.any()])
@@ -66,7 +70,12 @@ const DAILY_FREEZE_MS = 60_000;
 
 /** Initial folded state of the `llmRateLimit` projection. */
 export function rateLimitInit() {
-  return { lastDailyLimit: null, lastModelSelectionAt: null, lastProvider: null };
+  return {
+    lastDailyLimit: null,
+    lastModelSelectionAt: null,
+    lastCompletedTurnAt: null,
+    lastProvider: null
+  };
 }
 
 /**
@@ -94,6 +103,12 @@ export function foldRateLimit(state, event) {
       lastDailyLimit: { provider: hit.provider, message: hit.message, at: event.time ?? 0 }
     };
   }
+  // A turn that completed normally is proof the account is answering again, so
+  // it retires an earlier quota notice. Only `completed` counts: an `aborted`,
+  // `blocked`, `interrupted` or `error` turn says nothing about recovery.
+  if (event.type === 'turn/end' && event.data?.reason?.kind === 'completed') {
+    return { ...state, lastCompletedTurnAt: event.time ?? 0 };
+  }
   if (event.type === 'llm/retry' && event.data?.provider) {
     return { ...state, lastProvider: event.data.provider };
   }
@@ -110,10 +125,16 @@ export function foldRateLimit(state, event) {
 export function rateLimitView(state) {
   const hit = state.lastDailyLimit;
   const picked = state.lastModelSelectionAt;
+  const completed = state.lastCompletedTurnAt;
+  // The notice is for an *unresolved* quota failure: it shows only while the
+  // last quota failure is newer than both the last model switch and the last
+  // normally-completed turn. Without the completed-turn arm, a session that hit
+  // a 429 and then carried on chatting normally kept showing the banner.
   const active =
     hit !== null &&
     hit !== undefined &&
-    (picked === null || picked === undefined || hit.at >= picked);
+    (picked === null || picked === undefined || hit.at >= picked) &&
+    (completed === null || completed === undefined || hit.at >= completed);
   return {
     pendingModelSwitch: active,
     frozenUntil: active ? hit.at + DAILY_FREEZE_MS : null,
