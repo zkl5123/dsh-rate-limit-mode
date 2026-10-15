@@ -1,4 +1,5 @@
 import z from '@deepseek-ai/schemastery';
+import { z as projectionSchema } from 'zod';
 
 export const inject = ['agents', 'sessionProjections'];
 
@@ -21,34 +22,34 @@ export const Config = z.object({
 
 /** 会话投影 wire 视图：同步到客户端的每日限额状态。
  * 可空字段用 `z.union` 显式放行 `null`（schemastery 没有 `.nullable()`）。 */
-export const wireViewSchema = z.object({
-  pendingModelSwitch: z.boolean(),
-  frozenUntil: z.union([z.number(), z.any()]),
-  lastDailyLimit: z.union([
-    z.object({
-      provider: z.string(),
-      message: z.string(),
-      at: z.number()
+export const wireViewSchema = projectionSchema.object({
+  pendingModelSwitch: projectionSchema.boolean(),
+  frozenUntil: projectionSchema.union([projectionSchema.number(), projectionSchema.any()]),
+  lastDailyLimit: projectionSchema.union([
+    projectionSchema.object({
+      provider: projectionSchema.string(),
+      message: projectionSchema.string(),
+      at: projectionSchema.number()
     }),
-    z.any()
+    projectionSchema.any()
   ])
 });
 
 /** Folded state schema for the `llmRateLimit` projection. Nullable fields are
- * modelled with `z.union([…, z.any()])` because schemastery has no `.nullable()`. */
-export const rateLimitStateSchema = z.object({
-  lastDailyLimit: z.union([
-    z.object({
-      provider: z.string(),
-      message: z.string(),
-      at: z.number()
+ * modelled with `projectionSchema.union([…, projectionSchema.any()])` because schemastery has no `.nullable()`. */
+export const rateLimitStateSchema = projectionSchema.object({
+  lastDailyLimit: projectionSchema.union([
+    projectionSchema.object({
+      provider: projectionSchema.string(),
+      message: projectionSchema.string(),
+      at: projectionSchema.number()
     }),
-    z.any()
+    projectionSchema.any()
   ]),
-  lastModelSelectionAt: z.union([z.number(), z.any()]),
+  lastModelSelectionAt: projectionSchema.union([projectionSchema.number(), projectionSchema.any()]),
   // Remembered so a failure reported without a provider (the finish chunk of
   // `assistant/attempt`, and `turn/end`) still names the provider out of quota.
-  lastProvider: z.union([z.string(), z.any()])
+  lastProvider: projectionSchema.union([projectionSchema.string(), projectionSchema.any()])
 });
 
 /**

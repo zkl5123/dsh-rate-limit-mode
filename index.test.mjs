@@ -37,7 +37,7 @@ function createFakeCtx() {
     },
     sessionProjections: {
       register(definition) {
-        const registration = { key: definition.key, live: true };
+        const registration = { key: definition.key, definition, live: true };
         state.registrations.push(registration);
         return () => {
           registration.live = false;
@@ -182,12 +182,12 @@ test('every folded state and wire view satisfies its schema', () => {
     selectionEvent(1400)
   ];
   let state = rateLimitInit();
-  rateLimitStateSchema(state);
-  wireViewSchema(rateLimitView(state));
+  rateLimitStateSchema.parse(state);
+  wireViewSchema.parse(rateLimitView(state));
   for (const event of events) {
     state = foldRateLimit(state, event);
-    rateLimitStateSchema(state);
-    wireViewSchema(rateLimitView(state));
+    rateLimitStateSchema.parse(state);
+    wireViewSchema.parse(rateLimitView(state));
   }
   assert.equal(rateLimitView(state).pendingModelSwitch, false);
 });
@@ -257,4 +257,21 @@ test('the limiter admits within the window and parks beyond it', async () => {
   for (const effect of state.effects) effect.disposer();
   await parked;
   assert.equal(settled, true);
+});
+
+test('registered wire callback projects replayed history after restart', () => {
+  const { ctx, state } = createFakeCtx();
+  apply(ctx, {});
+  const projection = state.registrations[0].definition;
+  let folded = projection.init();
+  assert.deepEqual(projection.wire.view(folded), rateLimitView(folded));
+  for (const event of [
+    retryEvent(AGNES_DAILY_QUOTA, 'agnes', 1000),
+    selectionEvent(2000)
+  ]) {
+    folded = projection.apply(folded, event);
+    assert.deepEqual(projection.wire.view(folded), rateLimitView(folded));
+    projection.wire.viewSchema.parse(projection.wire.view(folded));
+  }
+  assert.equal(projection.wire.view(folded).pendingModelSwitch, false);
 });

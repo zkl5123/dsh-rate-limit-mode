@@ -9,20 +9,37 @@
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json"],
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json"
+  ],
   "peerDependencies": {
     "@deepseek-ai/schemastery": "*"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.18.4"
+    "@deepseek-ai/schemastery": "*",
+    "zod": "^4.6.5"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["slots", "sessions", "remote", "remote.session", "locale"]
+      "inject": [
+        "slots",
+        "sessions",
+        "remote",
+        "remote.session",
+        "locale"
+      ]
     }
   },
-  "meta": { "title": "速率限制模式", "description": "标准模式的限速变体：本会话及其子会话合计每分钟 10 次模型请求，每日额度耗尽时按 1 分钟 1 次节奏并提示切换模型。" }
+  "meta": {
+    "title": "速率限制模式",
+    "description": "标准模式的限速变体：本会话及其子会话合计每分钟 10 次模型请求，每日额度耗尽时按 1 分钟 1 次节奏并提示切换模型。"
+  }
 }

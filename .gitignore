@@ -2,3 +2,5 @@ node_modules/
 .session-dump/
 .diag-*
 .commitmsg.txt
+*.bak
+package-lock.json
