@@ -68,7 +68,6 @@ window.__ModuleLoader__.load({
   width: max-content;
   min-width: min(240px, 100vw - 32px);
   max-width: min(420px, 100vw - 32px);
-  max-height: min(360px, 100vh - 96px);
   box-shadow: var(--dsw-elevation-prominent);
   background: var(--dsw-alias-bg-overlay);
   color: var(--dsw-alias-label-primary);
@@ -79,9 +78,9 @@ window.__ModuleLoader__.load({
   display: flex;
   /* Fixed, like the built-in selector: the composer column clips overflow, so
      an absolutely positioned menu would be cut off. Position comes from the
-     measured trigger (inline style). */
+     measured trigger (inline style). The menu is neither height-capped nor
+     scrollable: the whole catalog is shown at once. */
   position: fixed;
-  overflow: hidden;
 }
 .dsh-rlm-status, .dsh-rlm-empty {
   color: var(--dsw-alias-label-tertiary);
@@ -112,7 +111,7 @@ window.__ModuleLoader__.load({
   padding: 0;
   font-weight: 600;
 }
-.dsh-rlm-groups { min-height: 0; overflow-y: auto; }
+.dsh-rlm-groups { min-height: 0; }
 .dsh-rlm-groupLabel {
   color: var(--dsw-alias-label-tertiary);
   padding: 6px 7px 2px;
@@ -281,13 +280,12 @@ window.__ModuleLoader__.load({
         const trigger = triggerRef.current;
         if (trigger && typeof trigger.getBoundingClientRect === 'function') {
           const rect = trigger.getBoundingClientRect();
-          // Rise above the trigger so the list never covers the composer, and
-          // cap the height to the space actually left above it so it cannot run
-          // off the top of the viewport.
+          // Rise above the trigger so the list never covers the composer. No
+          // height cap is applied: the whole catalog is shown at once rather
+          // than being scrolled inside the menu.
           setAnchor({
             bottom: Math.max(8, window.innerHeight - rect.top + 6),
-            right: Math.max(8, window.innerWidth - rect.right),
-            maxHeight: Math.max(120, rect.top - 16)
+            right: Math.max(8, window.innerWidth - rect.right)
           });
         }
         setOpen(true);
@@ -344,7 +342,7 @@ window.__ModuleLoader__.load({
             style:
               anchor === null
                 ? { visibility: 'hidden' }
-                : { bottom: anchor.bottom, right: anchor.right, maxHeight: anchor.maxHeight }
+                : { bottom: anchor.bottom, right: anchor.right }
           },
           error
             ? h(

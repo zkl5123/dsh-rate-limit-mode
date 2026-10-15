@@ -140,6 +140,10 @@ test('client installs one scoped stylesheet and removes it on unload', () => {
   assert.match(css, /min-height: 34px/);
   assert.match(css, /\.dsh-rlm-option:disabled/);
   assert.match(css, /\.dsh-rlm-menu\b/);
+  // No scrolling: the whole catalog is shown at once. Assert on the
+  // DECLARATIONS, so prose in a comment cannot satisfy or defeat the check.
+  assert.doesNotMatch(css, /overflow-y\s*:/, 'the menu must not scroll');
+  assert.doesNotMatch(css, /max-height\s*:/, 'the menu must not cap its height');
 
   host.dispose();
   assert.equal(styles.length, 0, 'unload removes the stylesheet');
@@ -319,8 +323,8 @@ test('the menu opens upward, above the trigger', () => {
   assert.equal(style.top, undefined, 'must not drop below the trigger');
   assert.equal(style.bottom, 800 - 500 + 6);
   assert.equal(style.right, 1200 - 900);
-  // Height is capped to the space above the trigger.
-  assert.equal(style.maxHeight, 500 - 16);
+  // No cap: every model is shown without scrolling.
+  assert.equal(style.maxHeight, undefined, 'no height cap: the full list is shown');
 
   host.dispose();
 });
