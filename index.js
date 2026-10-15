@@ -381,12 +381,20 @@ export function apply(ctx, config = {}) {
       },
       stateVersion: 1
     });
-    ctx.effect(() => {
+    // `ctx.effect` runs its callback IMMEDIATELY and collects the RETURNED
+    // function as the disposer, so the cleanup must be returned, not called.
+    // Calling it here (the earlier bug) disposed the projection on the spot,
+    // leaving the registry without the key and every client read `undefined`.
+    ctx.effect(() => () => {
       disposeProjection();
     }, `llm-rate-limit: drop rate-limit projection`);
   }
 
-  ctx.effect(() => {
+  // Returned, not called: this cleanup must run when the plugin unloads, not
+  // during apply. Calling it here detached every listener this plugin had just
+  // registered, which is why neither the limiter nor the freeze ever took
+  // effect (the plugin was effectively inert).
+  ctx.effect(() => () => {
     disposeCreated();
     disposeRequest();
     disposeSessionEvent();

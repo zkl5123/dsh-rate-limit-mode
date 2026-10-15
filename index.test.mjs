@@ -2,12 +2,51 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  apply,
   rateLimitInit,
   foldRateLimit,
   rateLimitView,
   rateLimitStateSchema,
   wireViewSchema
 } from './index.js';
+
+/**
+ * Minimal stand-in for the Host context, mirroring the one cordis behaviour
+ * these lifecycle tests exist to pin down: `ctx.effect(execute)` runs `execute`
+ * IMMEDIATELY and collects the function it RETURNS as the disposer. Calling a
+ * disposer inside that callback therefore unregisters everything during apply,
+ * which is exactly the bug that made the projection absent and the limiter inert.
+ */
+function createFakeCtx() {
+  const state = { registrations: [], listeners: [], effects: [] };
+  const ctx = {
+    logger: { info() {}, debug() {} },
+    agents: { get: () => undefined },
+    get: () => undefined,
+    on(event, handler) {
+      const entry = { event, handler, live: true };
+      state.listeners.push(entry);
+      return () => {
+        entry.live = false;
+      };
+    },
+    effect(execute, label) {
+      const disposer = execute();
+      state.effects.push({ label, disposer });
+      return disposer;
+    },
+    sessionProjections: {
+      register(definition) {
+        const registration = { key: definition.key, live: true };
+        state.registrations.push(registration);
+        return () => {
+          registration.live = false;
+        };
+      }
+    }
+  };
+  return { ctx, state };
+}
 
 // The two wordings the `agnes` provider actually returns for a spent free quota.
 // Neither contains "daily", which is why the first implementation — matching
@@ -151,4 +190,71 @@ test('every folded state and wire view satisfies its schema', () => {
     wireViewSchema(rateLimitView(state));
   }
   assert.equal(rateLimitView(state).pendingModelSwitch, false);
+});
+
+test('apply keeps the projection registered and the listeners attached', () => {
+  const { ctx, state } = createFakeCtx();
+  apply(ctx, {});
+
+  assert.equal(state.registrations.length, 1, 'exactly one projection unit registers');
+  assert.equal(state.registrations[0].key, 'llmRateLimit');
+  assert.equal(
+    state.registrations[0].live,
+    true,
+    'the projection must NOT be disposed during apply: ctx.effect collects the returned disposer'
+  );
+
+  const events = state.listeners.map((listener) => listener.event);
+  for (const expected of ['agent/created', 'agent/request', 'session/event']) {
+    assert.ok(events.includes(expected), `expected an ${expected} listener`);
+  }
+  for (const listener of state.listeners) {
+    assert.equal(listener.live, true, `${listener.event} must stay attached after apply`);
+  }
+
+  // Both cleanups were registered as effects, and each returned a callable.
+  assert.equal(state.effects.length, 2);
+  for (const effect of state.effects) {
+    assert.equal(typeof effect.disposer, 'function', `effect ${effect.label} must return a disposer`);
+  }
+});
+
+test('unloading the plugin detaches the projection and every listener', () => {
+  const { ctx, state } = createFakeCtx();
+  apply(ctx, {});
+
+  for (const effect of state.effects) effect.disposer();
+
+  assert.equal(state.registrations[0].live, false, 'unload removes the projection key');
+  for (const listener of state.listeners) {
+    assert.equal(listener.live, false, `unload detaches ${listener.event}`);
+  }
+});
+
+test('the limiter admits within the window and parks beyond it', async () => {
+  const { ctx, state } = createFakeCtx();
+  apply(ctx, { maxPerMinute: 2 });
+
+  // Mark the family as opted in, exactly as the `agent/created` listener does.
+  const agent = { id: 'session-root', session: { id: 'session-root', parentSession: undefined } };
+  state.listeners.find((listener) => listener.event === 'agent/created').handler({ agent });
+
+  const request = state.listeners.find((listener) => listener.event === 'agent/request');
+  const signal = new AbortController().signal;
+  const next = async () => {};
+
+  await request.handler({ agent, signal }, next);
+  await request.handler({ agent, signal }, next);
+
+  let settled = false;
+  const parked = request.handler({ agent, signal }, next).then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settled, false, 'the third request inside the window must wait');
+
+  // Unloading must release parked waiters rather than hang them.
+  for (const effect of state.effects) effect.disposer();
+  await parked;
+  assert.equal(settled, true);
 });

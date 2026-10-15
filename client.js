@@ -258,6 +258,9 @@ window.__ModuleLoader__.load({
       // the loading/absent state. Keep both subscriptions before early returns.
       const view = useProjection(PROJECTION_KEY);
       const modelSelection = useProjection(MODEL_SELECTION_KEY);
+      // A key the Host never registered reads `undefined`; there is nothing to
+      // show then. Both subscriptions run before this return so the hook order
+      // is fixed even while the projection is still absent.
       if (!view) return null;
 
       const hit = view.lastDailyLimit;
