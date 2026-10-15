@@ -282,9 +282,12 @@ window.__ModuleLoader__.load({
         const trigger = triggerRef.current;
         if (!trigger || typeof trigger.getBoundingClientRect !== 'function') return;
         const rect = trigger.getBoundingClientRect();
+        // Drop below the trigger, like the built-in selector, and cap the height
+        // to the space actually left under it so the list cannot run off-screen.
         setAnchor({
-          bottom: Math.max(8, window.innerHeight - rect.top + 6),
-          right: Math.max(8, window.innerWidth - rect.right)
+          top: Math.max(8, rect.bottom + 6),
+          right: Math.max(8, window.innerWidth - rect.right),
+          maxHeight: Math.max(120, window.innerHeight - rect.bottom - 16)
         });
       }, [open]);
 
@@ -341,7 +344,10 @@ window.__ModuleLoader__.load({
             className: 'dsh-rlm-menu',
             role: 'dialog',
             'aria-label': t('picker.title'),
-            style: anchor === null ? { visibility: 'hidden' } : { bottom: anchor.bottom, right: anchor.right }
+            style:
+              anchor === null
+                ? { visibility: 'hidden' }
+                : { top: anchor.top, right: anchor.right, maxHeight: anchor.maxHeight }
           },
           error
             ? h(
