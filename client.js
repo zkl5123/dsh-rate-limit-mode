@@ -28,6 +28,214 @@ window.__ModuleLoader__.load({
     const PROJECTION_KEY = 'llmRateLimit';
     const MODEL_SELECTION_KEY = 'modelSelection';
 
+    /**
+     * Styles mirroring the built-in model selector (`dsh-client-ui-model-selection`):
+     * same menu metrics (4px padding, `--dsw-elevation-prominent`, 240–420px wide,
+     * 360px max height), the same 34px option rows with `--dsw-alias-interactive-bg-hover`,
+     * the same 13px/18px model label, and the same tertiary "empty" treatment.
+     * Hover/disabled states need real selectors, so they ship as a stylesheet
+     * rather than inline styles.
+     */
+    const STYLE_ID = 'dsh-rate-limit-notice-styles';
+    const CSS = `
+.dsh-rlm-root { position: relative; flex: 0 0 auto; }
+.dsh-rlm-trigger {
+  border-radius: var(--dsw-radius-sm);
+  min-width: 0;
+  height: 28px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  background: 0 0;
+  border: none;
+  outline: none;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  display: flex;
+  flex: 0 0 auto;
+}
+.dsh-rlm-trigger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-rlm-trigger:focus-visible { box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); }
+.dsh-rlm-chevron { color: var(--dsw-alias-label-caption); flex: none; transition: transform .12s; }
+.dsh-rlm-chevronOpen { transform: rotate(180deg); }
+.dsh-rlm-backdrop { position: fixed; inset: 0; z-index: 1099; }
+.dsh-rlm-menu {
+  z-index: 1100;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  width: max-content;
+  min-width: min(240px, 100vw - 32px);
+  max-width: min(420px, 100vw - 32px);
+  max-height: min(360px, 100vh - 96px);
+  box-shadow: var(--dsw-elevation-prominent);
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-primary);
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  flex-direction: column;
+  padding: 4px;
+  display: flex;
+  /* Fixed, like the built-in selector: the composer column clips overflow, so
+     an absolutely positioned menu would be cut off. Position comes from the
+     measured trigger (inline style). */
+  position: fixed;
+  overflow: hidden;
+}
+.dsh-rlm-status, .dsh-rlm-empty {
+  color: var(--dsw-alias-label-tertiary);
+  padding: 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.dsh-rlm-error {
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 3px;
+  padding: 6px 7px;
+  font-size: 11px;
+  line-height: 16px;
+  display: flex;
+}
+.dsh-rlm-retry {
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  background: 0 0;
+  border: none;
+  flex: none;
+  padding: 0;
+  font-weight: 600;
+}
+.dsh-rlm-groups { min-height: 0; overflow-y: auto; }
+.dsh-rlm-groupLabel {
+  color: var(--dsw-alias-label-tertiary);
+  padding: 6px 7px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.dsh-rlm-option {
+  box-sizing: border-box;
+  border-radius: var(--dsw-radius-md);
+  width: auto;
+  min-width: 100%;
+  min-height: 34px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: 0 0;
+  border: none;
+  outline: none;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  display: flex;
+}
+.dsh-rlm-option:hover:not(:disabled), .dsh-rlm-option:focus-visible { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-rlm-option:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+.dsh-rlm-optionCopy { flex-direction: column; flex: 1; min-width: 0; display: flex; }
+.dsh-rlm-modelName {
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  overflow: hidden;
+}
+.dsh-rlm-check { color: var(--dsw-alias-label-primary); flex: 0 0 14px; place-items: center; display: grid; }
+.dsh-rlm-check svg { width: 14px; height: 14px; }
+.dsh-rlm-banner {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-left: 3px solid var(--dsw-alias-state-warn-primary);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+.dsh-rlm-bannerIcon { color: var(--dsw-alias-state-warn-primary); flex: 0 0 auto; display: grid; place-items: center; width: 16px; height: 18px; }
+.dsh-rlm-bannerBody { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dsh-rlm-bannerTitle { font-weight: 600; }
+.dsh-rlm-bannerDetail { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-rlm-bannerHint { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 16px; }
+`;
+
+    /**
+     * Install the stylesheet once per document. Returns the disposer that
+     * removes it; a second live instance gets a no-op disposer so unloading one
+     * copy never strips the styles the other still uses.
+     */
+    function installStyles() {
+      if (typeof document === 'undefined') return () => {};
+      if (document.getElementById(STYLE_ID) !== null) return () => {};
+      const element = document.createElement('style');
+      element.id = STYLE_ID;
+      element.textContent = CSS;
+      document.head.appendChild(element);
+      return () => element.remove();
+    }
+
+    /** 12px chevron that rotates while the menu is open. */
+    function Chevron({ open }) {
+      return h(
+        'svg',
+        {
+          className: open ? 'dsh-rlm-chevron dsh-rlm-chevronOpen' : 'dsh-rlm-chevron',
+          viewBox: '0 0 16 16',
+          width: 12,
+          height: 12,
+          'aria-hidden': true
+        },
+        h('path', {
+          d: 'M4 6.5 8 10.5 12 6.5',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.6,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round'
+        })
+      );
+    }
+
+    /** 14px check, matching the built-in selector's selected-row affordance. */
+    function Check() {
+      return h(
+        'svg',
+        { viewBox: '0 0 16 16', 'aria-hidden': true },
+        h('path', {
+          d: 'M3.5 8.5 6.5 11.5 12.5 4.5',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.6,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round'
+        })
+      );
+    }
+
+    /** Warning triangle for the banner. */
+    function WarnIcon() {
+      return h(
+        'svg',
+        { viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': true },
+        h('path', { d: 'M8 1.8 15 14H1L8 1.8Z', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinejoin: 'round' }),
+        h('path', { d: 'M8 6.2v3.4', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' }),
+        h('circle', { cx: 8, cy: 11.6, r: 0.9, fill: 'currentColor' })
+      );
+    }
+
     const NS = 'rateLimitNotice';
     const zh = {
       'notice.title': '每日额度已用完',
@@ -37,6 +245,7 @@ window.__ModuleLoader__.load({
       'picker.title': '选择模型',
       'picker.loading': '正在加载模型列表…',
       'picker.error': '模型列表加载失败：{message}',
+      'picker.retry': '重试',
       'picker.empty': '没有可用的模型。',
       'picker.current': '当前'
     };
@@ -48,6 +257,7 @@ window.__ModuleLoader__.load({
       'picker.title': 'Select a model',
       'picker.loading': 'Loading models…',
       'picker.error': 'Failed to load models: {message}',
+      'picker.retry': 'Retry',
       'picker.empty': 'No models available.',
       'picker.current': 'Current'
     };
@@ -57,6 +267,26 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = react.useState(false);
       const [groups, setGroups] = react.useState(null);
       const [error, setError] = react.useState(null);
+      // Viewport coordinates for the fixed menu, measured from the trigger.
+      const [anchor, setAnchor] = react.useState(null);
+      const triggerRef = react.useRef(null);
+
+      // The trigger is only mounted while the menu is closed, so measuring must
+      // happen on the transition to open. The menu stays hidden until the
+      // measurement lands, which avoids a visible jump from the corner.
+      react.useEffect(() => {
+        if (!open) {
+          setAnchor(null);
+          return;
+        }
+        const trigger = triggerRef.current;
+        if (!trigger || typeof trigger.getBoundingClientRect !== 'function') return;
+        const rect = trigger.getBoundingClientRect();
+        setAnchor({
+          bottom: Math.max(8, window.innerHeight - rect.top + 6),
+          right: Math.max(8, window.innerWidth - rect.right)
+        });
+      }, [open]);
 
       const load = () => {
         setOpen(true);
@@ -82,164 +312,85 @@ window.__ModuleLoader__.load({
       };
 
       if (!open) {
+        // Returned bare (not wrapped): the dock reads this element's `type`, and
+        // it must stay the trigger button.
         return h(
           'button',
           {
             type: 'button',
+            ref: triggerRef,
+            className: 'dsh-rlm-trigger',
             onClick: load,
             'aria-haspopup': 'dialog',
-            style: {
-              flex: '0 0 auto',
-              padding: '4px 12px',
-              borderRadius: '6px',
-              border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
-              background: 'transparent',
-              color: 'var(--dsw-alias-label-primary, currentColor)',
-              cursor: 'pointer',
-              fontSize: '12px',
-              lineHeight: '18px'
-            }
+            'aria-expanded': false
           },
-          t('notice.switchModel')
+          h('span', null, t('notice.switchModel')),
+          h(Chevron, { open: false })
         );
       }
 
       return h(
         'div',
-        {
-          role: 'dialog',
-          'aria-label': t('picker.title'),
-          style: {
-            position: 'relative',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '8px',
-            borderRadius: '8px',
-            background: 'var(--dsw-alias-bg-l2, var(--dsw-alias-bg-l1, #fff))',
-            border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
-            boxShadow: 'var(--dsw-elevation-prominent, 0 6px 24px rgba(0,0,0,0.18))',
-            color: 'var(--dsw-alias-label-primary, currentColor)',
-            fontSize: '12px',
-            lineHeight: '18px'
-          }
-        },
+        { className: 'dsh-rlm-root' },
+        // Click-away sheet behind the menu: dismissing needs no document
+        // listener, so the component stays on the hooks the dock provides.
+        h('div', { className: 'dsh-rlm-backdrop', onClick: close }),
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-          h('span', { style: { flex: '1 1 auto', fontWeight: 600 } }, t('picker.title')),
-          h(
-            'button',
-            {
-              type: 'button',
-              'aria-label': t('picker.title'),
-              onClick: close,
-              style: {
-                flex: '0 0 auto',
-                border: 'none',
-                background: 'transparent',
-                color: 'inherit',
-                cursor: 'pointer',
-                fontSize: '14px',
-                lineHeight: '18px',
-                padding: '0 4px'
-              }
-            },
-            '✕'
-          )
-        ),
-        error
-          ? h(
-              'div',
-              { style: { padding: '4px' } },
-              t('picker.error', { message: error.message }),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  onClick: load,
-                  style: {
-                    marginTop: '6px',
-                    padding: '2px 10px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
-                    background: 'transparent',
-                    color: 'inherit',
-                    cursor: 'pointer'
-                  }
-                },
-                t('notice.switchModel')
+          {
+            className: 'dsh-rlm-menu',
+            role: 'dialog',
+            'aria-label': t('picker.title'),
+            style: anchor === null ? { visibility: 'hidden' } : { bottom: anchor.bottom, right: anchor.right }
+          },
+          error
+            ? h(
+                'div',
+                { className: 'dsh-rlm-error' },
+                h('span', null, t('picker.error', { message: error.message })),
+                h('button', { type: 'button', className: 'dsh-rlm-retry', onClick: load }, t('picker.retry'))
               )
-            )
-          : groups === null
-            ? h('div', { style: { padding: '4px' } }, t('picker.loading'))
-            : groups.length === 0
-              ? h('div', { style: { padding: '4px' } }, t('picker.empty'))
-              : groups.map((group) =>
-                  h(
+            : groups === null
+              ? h('div', { className: 'dsh-rlm-status' }, t('picker.loading'))
+              : groups.length === 0
+                ? h('div', { className: 'dsh-rlm-empty' }, t('picker.empty'))
+                : h(
                     'div',
-                    { key: group.id, style: { marginBottom: '6px' } },
-                    h(
-                      'div',
-                      {
-                        style: {
-                          color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.9))',
-                          padding: '2px 4px',
-                          fontWeight: 600
-                        }
-                      },
-                      group.name || group.id
-                    ),
-                    (group.models || []).map((model) => {
-                      const isCurrent =
-                        current !== null &&
-                        current !== undefined &&
-                        current.provider === group.id &&
-                        current.model === model.id;
-                      return h(
-                        'button',
-                        {
-                          key: model.id,
-                          type: 'button',
-                          disabled: isCurrent,
-                          onClick: () => pick(group, model),
-                          style: {
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            width: '100%',
-                            textAlign: 'left',
-                            padding: '4px 8px',
-                            borderRadius: '6px',
-                            border: 'none',
-                            background: isCurrent
-                              ? 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.12))'
-                              : 'transparent',
-                            color: isCurrent
-                              ? 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.9))'
-                              : 'inherit',
-                            cursor: isCurrent ? 'default' : 'pointer',
-                            fontSize: '12px',
-                            lineHeight: '18px'
-                          }
-                        },
-                        h(
-                          'span',
-                          {
-                            style: {
-                              flex: '1 1 auto',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap'
-                            }
-                          },
-                          model.name || model.id
-                        ),
-                        isCurrent ? h('span', { style: { flex: '0 0 auto' } }, t('picker.current')) : null
-                      );
-                    })
+                    { className: 'dsh-rlm-groups' },
+                    groups.map((group) =>
+                      h(
+                        'div',
+                        { key: group.id },
+                        h('div', { className: 'dsh-rlm-groupLabel' }, group.name || group.id),
+                        (group.models || []).map((model) => {
+                          const isCurrent =
+                            current !== null &&
+                            current !== undefined &&
+                            current.provider === group.id &&
+                            current.model === model.id;
+                          return h(
+                            'button',
+                            {
+                              key: model.id,
+                              type: 'button',
+                              className: 'dsh-rlm-option',
+                              disabled: isCurrent,
+                              onClick: () => pick(group, model)
+                            },
+                            h(
+                              'span',
+                              { className: 'dsh-rlm-optionCopy' },
+                              h('span', { className: 'dsh-rlm-modelName' }, model.name || model.id)
+                            ),
+                            isCurrent
+                              ? h('span', { className: 'dsh-rlm-check', title: t('picker.current') }, h(Check, null))
+                              : null
+                          );
+                        })
+                      )
+                    )
                   )
-                )
+        )
       );
     }
 
@@ -278,55 +429,20 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        {
-          role: 'status',
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '10px 14px',
-            borderRadius: '8px',
-            background: 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.12))',
-            border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
-            color: 'var(--dsw-alias-label-primary, currentColor)',
-            fontSize: '13px',
-            lineHeight: '20px'
-          }
-        },
+        { className: 'dsh-rlm-banner', role: 'status' },
+        h('span', { className: 'dsh-rlm-bannerIcon' }, h(WarnIcon, null)),
         h(
           'div',
-          { style: { flex: '1 1 auto', minWidth: 0 } },
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
-            h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, t('notice.title')),
-            detail
-              ? h(
-                  'span',
-                  {
-                    style: {
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.9))'
-                    },
-                    title: detail
-                  },
-                  t('notice.message', { provider: hit.provider || '?', detail })
-                )
-              : null
-          ),
-          h(
-            'div',
-            {
-              style: {
-                color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.9))',
-                fontSize: '12px',
-                marginTop: '2px'
-              }
-            },
-            t('notice.hint')
-          )
+          { className: 'dsh-rlm-bannerBody' },
+          h('div', { className: 'dsh-rlm-bannerTitle' }, t('notice.title')),
+          detail
+            ? h(
+                'div',
+                { className: 'dsh-rlm-bannerDetail', title: detail },
+                t('notice.message', { provider: hit.provider || '?', detail })
+              )
+            : null,
+          h('div', { className: 'dsh-rlm-bannerHint' }, t('notice.hint'))
         ),
         h(ModelPicker, {
           sessionId,
@@ -348,6 +464,7 @@ window.__ModuleLoader__.load({
      * @param ctx - client root context.
      */
     function apply(ctx) {
+      ctx.effect(() => installStyles(), 'rate-limit notice: styles');
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'rate-limit notice: dictionaries');
       const t = ctx.locale.bind(NS);
       const remoteSession = ctx.remote.session;
