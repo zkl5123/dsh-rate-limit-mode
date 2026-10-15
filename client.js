@@ -271,27 +271,25 @@ window.__ModuleLoader__.load({
       const [anchor, setAnchor] = react.useState(null);
       const triggerRef = react.useRef(null);
 
-      // The trigger is only mounted while the menu is closed, so measuring must
-      // happen on the transition to open. The menu stays hidden until the
-      // measurement lands, which avoids a visible jump from the corner.
-      react.useEffect(() => {
-        if (!open) {
-          setAnchor(null);
-          return;
-        }
-        const trigger = triggerRef.current;
-        if (!trigger || typeof trigger.getBoundingClientRect !== 'function') return;
-        const rect = trigger.getBoundingClientRect();
-        // Drop below the trigger, like the built-in selector, and cap the height
-        // to the space actually left under it so the list cannot run off-screen.
-        setAnchor({
-          top: Math.max(8, rect.bottom + 6),
-          right: Math.max(8, window.innerWidth - rect.right),
-          maxHeight: Math.max(120, window.innerHeight - rect.bottom - 16)
-        });
-      }, [open]);
-
+      /**
+       * Measure the trigger and open the menu. The measurement MUST happen here,
+       * while the trigger is still mounted: an effect that read the ref after
+       * opening saw it cleared, so the anchor stayed null and the menu stayed
+       * `visibility: hidden` behind the click-away sheet.
+       */
       const load = () => {
+        const trigger = triggerRef.current;
+        if (trigger && typeof trigger.getBoundingClientRect === 'function') {
+          const rect = trigger.getBoundingClientRect();
+          // Drop below the trigger, like the built-in selector, and cap the
+          // height to the space actually left under it so the list cannot run
+          // off-screen.
+          setAnchor({
+            top: Math.max(8, rect.bottom + 6),
+            right: Math.max(8, window.innerWidth - rect.right),
+            maxHeight: Math.max(120, window.innerHeight - rect.bottom - 16)
+          });
+        }
         setOpen(true);
         setError(null);
         setGroups(null);
@@ -314,31 +312,30 @@ window.__ModuleLoader__.load({
         close();
       };
 
-      if (!open) {
-        // Returned bare (not wrapped): the dock reads this element's `type`, and
-        // it must stay the trigger button.
-        return h(
+      // The trigger stays mounted whether or not the menu is open: it anchors
+      // the menu's measured position, keeps the dock row from collapsing when
+      // the menu opens, and toggles the menu on a second click.
+      return h(
+        'div',
+        { className: 'dsh-rlm-root' },
+        h(
           'button',
           {
             type: 'button',
             ref: triggerRef,
             className: 'dsh-rlm-trigger',
-            onClick: load,
+            onClick: open ? close : load,
             'aria-haspopup': 'dialog',
-            'aria-expanded': false
+            'aria-expanded': open
           },
           h('span', null, t('notice.switchModel')),
-          h(Chevron, { open: false })
-        );
-      }
-
-      return h(
-        'div',
-        { className: 'dsh-rlm-root' },
+          h(Chevron, { open })
+        ),
         // Click-away sheet behind the menu: dismissing needs no document
         // listener, so the component stays on the hooks the dock provides.
-        h('div', { className: 'dsh-rlm-backdrop', onClick: close }),
-        h(
+        open ? h('div', { className: 'dsh-rlm-backdrop', onClick: close }) : null,
+        open
+          ? h(
           'div',
           {
             className: 'dsh-rlm-menu',
@@ -396,7 +393,8 @@ window.__ModuleLoader__.load({
                       )
                     )
                   )
-        )
+            )
+          : null
       );
     }
 

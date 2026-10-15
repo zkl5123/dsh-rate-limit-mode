@@ -118,7 +118,9 @@ test('session slot handles absent and active projections with fixed hook order',
     assert.deepEqual(calls, ['llmRateLimit', 'modelSelection']);
     if (active) {
       const picker = banner.children.at(-1);
-      assert.equal(picker.type(picker.props).type, 'button');
+      const tree = picker.type(picker.props);
+      assert.equal(tree.props.className, 'dsh-rlm-root');
+      assert.equal(tree.children[0].type, 'button');
     } else assert.equal(banner, null);
   }
   host.dispose();
@@ -162,6 +164,114 @@ test('the banner exposes the switch-model trigger as the last dock child', () =>
   assert.equal(banner.props.className, 'dsh-rlm-banner');
   const picker = banner.children.at(-1);
   assert.equal(picker.type.name, 'ModelPicker');
+
+  host.dispose();
+});
+
+/**
+ * Loads the client with a React stand-in whose `useState`/`useRef` persist
+ * across renders, so a component can be re-rendered the way the real renderer
+ * would after `setState`. The plain fake returns a no-op setter, which cannot
+ * exercise any open/closed transition.
+ */
+function loadClientStateful() {
+  let plugin;
+  const cells = [];
+  let cursor = 0;
+  const react = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in cells)) cells[index] = initial;
+      return [
+        cells[index],
+        (next) => {
+          cells[index] = typeof next === 'function' ? next(cells[index]) : next;
+        },
+      ];
+    },
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in cells)) cells[index] = { current: initial };
+      return cells[index];
+    },
+    useEffect() {},
+  };
+  const styles = [];
+  const document = {
+    getElementById: (id) => styles.find((element) => element.id === id) ?? null,
+    createElement: () => ({
+      id: '',
+      textContent: '',
+      remove() {},
+    }),
+    head: { appendChild: (element) => styles.push(element) },
+  };
+  vm.runInNewContext(fs.readFileSync(new URL('./client.js', import.meta.url), 'utf8'), {
+    document,
+    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => react); } } },
+  });
+  return {
+    plugin,
+    /** Re-render one component with the hooks' persisted state. */
+    render(component, props) {
+      cursor = 0;
+      return component(props);
+    },
+  };
+}
+
+test('the trigger stays mounted while the menu is open', () => {
+  const { plugin, render } = loadClientStateful();
+  const host = context();
+  plugin.apply(host.ctx);
+
+  const element = host.component()({
+    sessionId: 'session-1',
+    useProjection: (key) =>
+      key === 'llmRateLimit'
+        ? {
+            pendingModelSwitch: true,
+            lastDailyLimit: { at: 1, provider: 'agnes', message: 'quota spent' },
+          }
+        : undefined,
+  });
+  const banner = element.type(element.props);
+  const pickerElement = banner.children.at(-1);
+  const ModelPicker = pickerElement.type;
+  const props = {
+    ...pickerElement.props,
+    catalog: () => Promise.resolve({ ok: true, value: { groups: [] } }),
+  };
+
+  // Closed: a bare trigger inside the root.
+  let tree = render(ModelPicker, props);
+  assert.equal(tree.props.className, 'dsh-rlm-root');
+  assert.equal(tree.children[0].type, 'button');
+  assert.equal(tree.children[0].props.className, 'dsh-rlm-trigger');
+  assert.equal(tree.children[1], null, 'no click-away sheet while closed');
+
+  // The user clicks the trigger.
+  tree.children[0].props.onClick();
+  tree = render(ModelPicker, props);
+
+  // The regression: the trigger used to be swapped out for the menu, which
+  // cleared the ref the menu is measured from and left the menu invisible
+  // behind a full-screen click-away sheet.
+  assert.equal(tree.children[0].type, 'button', 'trigger must survive opening');
+  assert.equal(tree.children[0].props.className, 'dsh-rlm-trigger');
+  assert.equal(tree.children[0].props['aria-expanded'], true);
+
+  // The menu and its sheet appear alongside it.
+  assert.equal(tree.children[1].props.className, 'dsh-rlm-backdrop');
+  assert.equal(tree.children[2].props.className, 'dsh-rlm-menu');
+
+  // A second click on the trigger closes it again.
+  tree.children[0].props.onClick();
+  tree = render(ModelPicker, props);
+  assert.equal(tree.children[0].type, 'button');
+  assert.equal(tree.children[1], null, 'sheet is gone once closed');
+  assert.equal(tree.children[2], null, 'menu is gone once closed');
 
   host.dispose();
 });
