@@ -1,8 +1,6 @@
 import z from '@deepseek-ai/schemastery';
 
-const name = 'llm-rate-limit';
-
-export const inject = ['agents'];
+export const inject = ['agents', 'sessionProjections'];
 
 /**
  * Runtime schema for {@link Config}.
@@ -21,15 +19,36 @@ export const Config = z.object({
   freezeOnDailyLimit: z.boolean().default(true)
 });
 
-/** 会话投影 wire 视图：同步到客户端的每日限额状态。 */
-const wireViewSchema = z.object({
+/** 会话投影 wire 视图：同步到客户端的每日限额状态。
+ * 可空字段用 `z.union` 显式放行 `null`（schemastery 没有 `.nullable()`）。 */
+export const wireViewSchema = z.object({
   pendingModelSwitch: z.boolean(),
-  frozenUntil: z.number().nullable(),
-  lastDailyLimit: z.object({
-    provider: z.string(),
-    message: z.string(),
-    at: z.number()
-  }).nullable()
+  frozenUntil: z.union([z.number(), z.any()]),
+  lastDailyLimit: z.union([
+    z.object({
+      provider: z.string(),
+      message: z.string(),
+      at: z.number()
+    }),
+    z.any()
+  ])
+});
+
+/** Folded state schema for the `llmRateLimit` projection. Nullable fields are
+ * modelled with `z.union([…, z.any()])` because schemastery has no `.nullable()`. */
+export const rateLimitStateSchema = z.object({
+  lastDailyLimit: z.union([
+    z.object({
+      provider: z.string(),
+      message: z.string(),
+      at: z.number()
+    }),
+    z.any()
+  ]),
+  lastModelSelectionAt: z.union([z.number(), z.any()]),
+  // Remembered so a failure reported without a provider (the finish chunk of
+  // `assistant/attempt`, and `turn/end`) still names the provider out of quota.
+  lastProvider: z.union([z.string(), z.any()])
 });
 
 /**
@@ -40,6 +59,66 @@ const wireViewSchema = z.object({
  * 视图语义为「本宿主代次内是否处于每日限额冻结」。
  */
 const projectionKey = 'llmRateLimit';
+
+/** How long the family is paced to one request per minute after a quota 429. */
+const DAILY_FREEZE_MS = 60_000;
+
+/** Initial folded state of the `llmRateLimit` projection. */
+export function rateLimitInit() {
+  return { lastDailyLimit: null, lastModelSelectionAt: null, lastProvider: null };
+}
+
+/**
+ * Fold one committed session event into the `llmRateLimit` state.
+ *
+ * Kept pure and at module scope so the notice can be replayed from a stored
+ * session log — that replay is how the behaviour is verified without waiting
+ * for a provider to run out of quota again.
+ *
+ * @param state - previous folded state.
+ * @param event - committed session event (`{type, time, data}`).
+ * @returns the next folded state.
+ */
+export function foldRateLimit(state, event) {
+  if (event.type === 'model/selection') {
+    // A durable model selection supersedes an older quota notice: the user
+    // picked a live model, so the notice is cleared.
+    return { ...state, lastModelSelectionAt: event.time ?? 0 };
+  }
+  const hit = quotaFailureOf(event, state.lastProvider);
+  if (hit) {
+    return {
+      ...state,
+      lastProvider: hit.provider || state.lastProvider,
+      lastDailyLimit: { provider: hit.provider, message: hit.message, at: event.time ?? 0 }
+    };
+  }
+  if (event.type === 'llm/retry' && event.data?.provider) {
+    return { ...state, lastProvider: event.data.provider };
+  }
+  return state;
+}
+
+/**
+ * Project the folded state to the client wire view. Referentially stable: the
+ * view recomputes only when the folded state changes and exposes raw facts, so
+ * the client compares timestamps itself and no host clock is involved.
+ *
+ * @param state - folded `llmRateLimit` state.
+ */
+export function rateLimitView(state) {
+  const hit = state.lastDailyLimit;
+  const picked = state.lastModelSelectionAt;
+  const active =
+    hit !== null &&
+    hit !== undefined &&
+    (picked === null || picked === undefined || hit.at >= picked);
+  return {
+    pendingModelSwitch: active,
+    frozenUntil: active ? hit.at + DAILY_FREEZE_MS : null,
+    lastDailyLimit: hit ?? null
+  };
+}
 
 export function apply(ctx, config = {}) {
   const maxPerMinute = config.maxPerMinute ?? 10;
@@ -52,17 +131,19 @@ export function apply(ctx, config = {}) {
   const queues = new Map(); // rootSessionId -> Array<(value) => void>
   const timers = new Map(); // rootSessionId -> pending release timer
 
-  // --- daily-limit freeze: when the provider reports the account's DAILY
-  // quota is spent (429 + daily-limit wording), hold the family's next model
+  // --- daily-limit freeze: when the provider reports the account's quota is
+  // spent (a 429 the retry policy cannot clear), hold the family's next model
   // request for a full minute so pacing becomes one-per-minute. The freeze
   // state is mirrored into the `llmRateLimit` session projection wire view
   // so the client UI can surface a notice / model-picker affordance.
-  const DAILY_FREEZE_MS = 60_000;
   const frozen = new Map(); // rootSessionId -> number (epoch ms freeze end)
   // Root ids that have ever been under a daily-limit freeze this generation.
   // A durable `model/selection` (the user picked a model through the picker)
   // retires the whole family's pacing: the new model is a live provider.
   const everFrozen = new Set(); // rootSessionId
+  // Last provider seen per family. `assistant/attempt` and `turn/end` report a
+  // quota failure without naming the provider, so it is recalled from here.
+  const lastProvider = new Map(); // rootSessionId -> provider
 
   // --- agent/created: mark family opt-in for the limiter.
   const disposeCreated = ctx.on('agent/created', ({ agent }) => {
@@ -248,36 +329,37 @@ export function apply(ctx, config = {}) {
     return next();
   });
 
-  // --- agent/request-error: recognise a daily-limit failure. Because the
-  // preset mounts llm-retry ahead of this plugin, llm-retry's auto-retry
-  // already governs ordinary 429s; for a DAILY-quota 429 we additionally
-  // freeze the family for a full minute (one-per-minute pacing) and mirror
-  // the state into the `llmRateLimit` projection so the client can surface
-  // a notice / model-picker. We always return `{kind:'retry'}` so the step
-  // stays alive (never kill the turn with a non-retry action) — the pacing
-  // freeze in `agent/request` then spaces the follow-up attempts.
-  const disposeRequestError = ctx.on('agent/request-error', async ({ agent, provider, failure, signal }, next) => {
-    if (freezeOnDailyLimit && isDailyLimitFailure(provider, failure)) {
-      const rootId = rootOf(agent);
-      setFrozen(rootId, provider, failure.message);
-      // Keep the step alive; the pacing freeze paces the follow-up attempt.
-      return { kind: 'retry' };
-    }
-    // Ordinary failure: keep the standard llm-retry behaviour.
-    return next();
-  });
-
-  // --- session/event: a durable `model/selection` (the user picked a model
-  // through the built-in picker) retires this family's pacing. The picked
-  // model routes the next request through the built-in model-selection
-  // machinery, so the switch is not held behind a minute.
+  // --- Quota freezes are driven by the COMMITTED `llm/retry` session event,
+  // NOT by an `agent/request-error` waterfall seat. `llm-retry` (which the
+  // preset mounts ahead of this plugin) owns that waterfall: as soon as it
+  // decides to retry it returns `{kind:'retry'}` WITHOUT calling `next()`, so
+  // any seat after it never runs. Its appended `llm/retry` event carries
+  // exactly `{provider, failure}` — the same facts the projection folds — so
+  // deriving the freeze from that event keeps the live pacing and the client
+  // notice same-sourced, and independent of waterfall order.
   const disposeSessionEvent = ctx.on('session/event', (session, event) => {
-    if (event.type !== 'model/selection') return;
+    if (event.type === 'model/selection') {
+      // A durable `model/selection` (the user picked a model through the
+      // built-in picker) retires this family's pacing. The picked model routes
+      // the next request through the built-in model-selection machinery, so the
+      // switch is not held behind a minute.
+      const rootId = familyRootOfSession(session);
+      if (rootId === void 0) return;
+      if (retirePacing(rootId)) {
+        ctx.logger?.info?.('[llm-rate-limit] family %s pacing retired by model selection', rootId);
+      }
+      return;
+    }
+    if (!freezeOnDailyLimit) return;
     const rootId = familyRootOfSession(session);
     if (rootId === void 0) return;
-    if (retirePacing(rootId)) {
-      ctx.logger?.info?.('[llm-rate-limit] family %s pacing retired by model selection', rootId);
+    const hit = quotaFailureOf(event, lastProvider.get(rootId));
+    if (hit) {
+      lastProvider.set(rootId, hit.provider);
+      setFrozen(rootId, hit.provider, hit.message);
+      return;
     }
+    if (event.type === 'llm/retry' && event.data?.provider) lastProvider.set(rootId, event.data.provider);
   });
 
   // --- session projection: a PURE durable fold over committed `llm/retry`
@@ -290,68 +372,23 @@ export function apply(ctx, config = {}) {
   if (ctx.sessionProjections?.register) {
     const disposeProjection = ctx.sessionProjections.register({
       key: projectionKey,
-      stateSchema: z.object({
-        lastDailyLimit: z.object({
-          provider: z.string(),
-          message: z.string(),
-          at: z.number()
-        }).nullable(),
-        lastModelSelectionAt: z.number().nullable()
-      }).strict(),
-      init: () => ({
-        lastDailyLimit: null,
-        lastModelSelectionAt: null
-      }),
-      apply: (state, event) => {
-        if (event.type === 'llm/retry') {
-          const failure = event.data?.failure;
-          if (failure && isDailyLimitFailure(event.data?.provider, failure)) {
-            return {
-              ...state,
-              lastDailyLimit: {
-                provider: event.data?.provider ?? '',
-                message: failure.message ?? '',
-                at: event.time ?? 0
-              }
-            };
-          }
-          return state;
-        }
-        if (event.type === 'model/selection') {
-          // A durable model selection supersedes an older daily-limit notice:
-          // the user picked a live model, so the notice is cleared.
-          return { ...state, lastModelSelectionAt: event.time ?? 0 };
-        }
-        return state;
-      },
+      stateSchema: rateLimitStateSchema,
+      init: rateLimitInit,
+      apply: foldRateLimit,
       wire: {
         viewSchema: wireViewSchema,
-        // Referentially stable: the view recomputes only when the folded
-        // state changes, and exposes the raw facts. The client decides
-        // freshness (hit older than the last model selection, or outside the
-        // pacing window) without a host-side Date.now().
-        view: (state) => {
-          const hit = state.lastDailyLimit;
-          const picked = state.lastModelSelectionAt;
-          const active = hit !== null && (picked === null || hit.at >= picked);
-          return wireViewSchema.parse({
-            pendingModelSwitch: active,
-            frozenUntil: active ? hit.at + DAILY_FREEZE_MS : null,
-            lastDailyLimit: hit
-          });
-        }
+        view: (state) => wireViewSchema.parse(rateLimitView(state))
       },
       stateVersion: 1
     });
     ctx.effect(() => {
       disposeProjection();
-    }, `${name}: drop rate-limit projection`);
+    }, `llm-rate-limit: drop rate-limit projection`);
   }
 
   ctx.effect(() => {
     disposeCreated();
     disposeRequest();
-    disposeRequestError();
     disposeSessionEvent();
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
@@ -363,43 +400,97 @@ export function apply(ctx, config = {}) {
     optedIn.clear();
     frozen.clear();
     everFrozen.clear();
-  }, `${name}: drop parked rate-limit waiters`);
+    lastProvider.clear();
+  }, `llm-rate-limit: drop parked rate-limit waiters`);
 }
 
 /**
- * A provider failure that reads as "the account has used up its DAILY quota"
- * (the 429 + daily-limit-keyword combination the user asked for): we stop
- * hammering that provider and let the family's 1-per-minute freeze do the
- * pacing instead of the provider's backoff.
+ * Extract the quota failure a committed session event records, or `null`.
+ *
+ * Three event kinds can carry one, and they are NOT redundant. `llm/retry`
+ * covers a failure the retry policy is about to act on and is the only one that
+ * names the provider. A failure that EXHAUSTS the retries — or arrives when the
+ * policy declines to retry — is recorded only by the finish chunk of
+ * `assistant/attempt` and by `turn/end`. A notice folded from `llm/retry` alone
+ * would therefore miss exactly the terminal case in which the user must switch
+ * models, which is the case observed in practice:
+ *
+ *   assistant/attempt -> stream[].chunk(Finish).reason.failure
+ *   turn/end          -> reason.error   (message "429: … text quota …")
+ *   llm/retry         -> failure        (plus the provider)
+ *
+ * @param event - a committed session event (`{type, time, data}`).
+ * @param fallbackProvider - provider to attribute a failure to when the event
+ *   does not name one.
+ * @returns `{provider, message}`, or `null` when the event records no quota failure.
+ */
+function quotaFailureOf(event, fallbackProvider) {
+  const data = event?.data;
+  if (!data) return null;
+  const hit = (failure, provider) => {
+    const named = provider ?? fallbackProvider ?? '';
+    if (!isDailyLimitFailure(named, failure)) return null;
+    return { provider: named, message: failure?.message ?? '' };
+  };
+
+  if (event.type === 'llm/retry') return hit(data.failure, data.provider);
+
+  if (event.type === 'assistant/attempt') {
+    if (!Array.isArray(data.stream)) return null;
+    for (const entry of data.stream) {
+      const chunk = entry?.chunk;
+      if (chunk?.type !== 'finish') continue;
+      const found = hit(chunk.reason?.failure, data.provider);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (event.type === 'turn/end') return hit(data.reason?.error, data.provider);
+
+  return null;
+}
+
+/**
+ * A provider failure that means "stop hammering this account's quota": the
+ * condition the freeze, the one-per-minute pacing and the client's
+ * model-switch notice all exist for.
+ *
+ * The status/code decides, because provider wording is not dependable. A real
+ * agnes 429 reports `code: "RATE_LIMIT"` with the text "You've reached the API
+ * rate limit for free users. Upgrade to a Token Plan…" — which contains no
+ * "daily", "quota" or "today" at all, so a wording-only test silently misses
+ * exactly the failure this plugin is built for. Wording is therefore used only
+ * as a fallback when the adapter surfaced neither a status nor a code.
  */
 function isDailyLimitFailure(provider, failure) {
   if (!failure) return false;
-  // Accept a daily-limit 429 even when the provider does not expose an HTTP
-  // status on the failure object (several adapters report only a message and
-  // the RATE_LIMIT code). Require either status 429, or the RATE_LIMIT code,
-  // before the keyword match decides.
   const status = failure.status;
   const code = String(failure.code ?? '');
-  const rateLimited = status === 429 || (status !== void 0 && status >= 500) || code === 'RATE_LIMIT';
-  if (!rateLimited) return false;
   const text = `${provider ?? ''} ${failure.message ?? ''}`.toLowerCase();
-  // English daily-quota phrasings.
+  const rateLimited =
+    status === 429 ||
+    code === 'RATE_LIMIT' ||
+    /(^|\D)429(\D|$)/.test(text) ||
+    /\brate[-\s_]?limit/.test(text);
+  if (rateLimited) return true;
+  // A 5xx is a provider fault, not a spent quota: switching models may help,
+  // but it is not the condition this notice speaks about.
+  if (status !== void 0 && status >= 500) return false;
+  // No usable status or code: fall back to explicit quota wording (English and
+  // Chinese daily-cap phrasings).
   const en =
     /daily[-_ ]?limit/.test(text) ||
     /daily[-_ ]?(quota|allowance|usage)/.test(text) ||
     /used (all|the|your|up) (daily|today)/.test(text) ||
     /used up (all|the|your|today|daily)/.test(text) ||
     /used up today'?s/.test(text) ||
-    /used up today'?s (text )?quota/.test(text) ||
     /(daily|today)'?s (limit|quota|usage|text quota)/.test(text) ||
     /limit (reached|exceeded) (for )?(today|daily)/.test(text) ||
     /(quota|limit) (exceeded|reached) (today|daily)/.test(text) ||
     /exceeds (the )?daily/.test(text) ||
-    /limited to 1 request every minute/.test(text) ||
     /quota.{0,30}(exceeded|reached|limit|used up)/.test(text) ||
-    /daily.{0,30}(limit|exceeded|quota|reached)/.test(text) ||
-    /used up .{0,20}(quota|limit)/.test(text);
-  // Chinese daily-quota phrasings.
+    /daily.{0,30}(limit|exceeded|quota|reached)/.test(text);
   const zh = /今日上限|每日上限|今日限额|每日限额|今日配额|每日配额|今日额度|每日额度|已?使用完(今|每)?日|今.{0,3}额度已满|每日限额已满|今日限额已满|超过.{0,6}(每日|今日)(限额|上限|配额)|已达.{0,4}(每日|今日)(上限|限额|配额)/.test(text);
   return en || zh;
 }

@@ -5,6 +5,9 @@
 - insert:
     - id: llm-rate-limit
       name: '@local/dsh-rate-limit-mode'
+      inject:
+        - agents
+        - sessionProjections
       config:
         maxPerMinute: 10
 - insert:
