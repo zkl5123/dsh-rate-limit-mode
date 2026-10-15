@@ -281,13 +281,13 @@ window.__ModuleLoader__.load({
         const trigger = triggerRef.current;
         if (trigger && typeof trigger.getBoundingClientRect === 'function') {
           const rect = trigger.getBoundingClientRect();
-          // Drop below the trigger, like the built-in selector, and cap the
-          // height to the space actually left under it so the list cannot run
-          // off-screen.
+          // Rise above the trigger so the list never covers the composer, and
+          // cap the height to the space actually left above it so it cannot run
+          // off the top of the viewport.
           setAnchor({
-            top: Math.max(8, rect.bottom + 6),
+            bottom: Math.max(8, window.innerHeight - rect.top + 6),
             right: Math.max(8, window.innerWidth - rect.right),
-            maxHeight: Math.max(120, window.innerHeight - rect.bottom - 16)
+            maxHeight: Math.max(120, rect.top - 16)
           });
         }
         setOpen(true);
@@ -344,7 +344,7 @@ window.__ModuleLoader__.load({
             style:
               anchor === null
                 ? { visibility: 'hidden' }
-                : { top: anchor.top, right: anchor.right, maxHeight: anchor.maxHeight }
+                : { bottom: anchor.bottom, right: anchor.right, maxHeight: anchor.maxHeight }
           },
           error
             ? h(

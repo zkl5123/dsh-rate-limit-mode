@@ -209,7 +209,11 @@ function loadClientStateful() {
   };
   vm.runInNewContext(fs.readFileSync(new URL('./client.js', import.meta.url), 'utf8'), {
     document,
-    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => react); } } },
+    window: {
+      innerHeight: 800,
+      innerWidth: 1200,
+      __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => react); } },
+    },
   });
   return {
     plugin,
@@ -272,6 +276,51 @@ test('the trigger stays mounted while the menu is open', () => {
   assert.equal(tree.children[0].type, 'button');
   assert.equal(tree.children[1], null, 'sheet is gone once closed');
   assert.equal(tree.children[2], null, 'menu is gone once closed');
+
+  host.dispose();
+});
+
+test('the menu opens upward, above the trigger', () => {
+  const { plugin, render } = loadClientStateful();
+  const host = context();
+  plugin.apply(host.ctx);
+
+  const element = host.component()({
+    sessionId: 'session-1',
+    useProjection: (key) =>
+      key === 'llmRateLimit'
+        ? {
+            pendingModelSwitch: true,
+            lastDailyLimit: { at: 1, provider: 'agnes', message: 'quota spent' },
+          }
+        : undefined,
+  });
+  const banner = element.type(element.props);
+  const pickerElement = banner.children.at(-1);
+  const ModelPicker = pickerElement.type;
+  const props = {
+    ...pickerElement.props,
+    catalog: () => Promise.resolve({ ok: true, value: { groups: [] } }),
+  };
+
+  let tree = render(ModelPicker, props);
+  // Stand in for a laid-out trigger near the bottom of an 800px-tall viewport.
+  tree.children[0].props.ref.current = {
+    getBoundingClientRect: () => ({ top: 500, bottom: 530, right: 900 }),
+  };
+
+  tree.children[0].props.onClick();
+  tree = render(ModelPicker, props);
+
+  const menu = tree.children[2];
+  assert.equal(menu.props.className, 'dsh-rlm-menu');
+  const style = menu.props.style;
+  // Anchored by `bottom` (rising above the trigger), never by `top`.
+  assert.equal(style.top, undefined, 'must not drop below the trigger');
+  assert.equal(style.bottom, 800 - 500 + 6);
+  assert.equal(style.right, 1200 - 900);
+  // Height is capped to the space above the trigger.
+  assert.equal(style.maxHeight, 500 - 16);
 
   host.dispose();
 });
